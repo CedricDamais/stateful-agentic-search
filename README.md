@@ -1,54 +1,354 @@
-# agentic-policy
+(eval):5: parse error near `end'
+(eval):5: parse error near `end'
+# Stateful Agentic Search
 
-Experiment 0 for an agentic-search policy: given an explicit state \(S_t\), select one action from a finite set, execute it, append the observation, and repeat. This is deliberately a **vanilla constrained-decoding baseline**—no SFT or RL is included.
+Stateful Agentic Search is a research architecture for retrieval agents whose control decisions are explicit, finite, measurable, and trainable.
 
-The project separates the policy from the sampler. A Qwen adapter maps the actions to single-token codes, reads their logits in one forward pass, normalizes those scores into a distribution, and the sampler chooses an action. Invalid actions are impossible by construction and the prompt prefill is performed only once per decision.
+Instead of asking a language model to generate an unrestricted reasoning trace before every tool call, the system gives a small policy model the current search state and asks it to choose one action from a fixed set. The selected tool runs, its observation updates the state, and the policy acts again.
+
+The central hypothesis is:
+
+> Agentic search can become faster, cheaper, and easier to optimize when tool selection is treated as a small sequential decision problem rather than a text-generation problem.
+
+Experiment 0 implements the untrained constrained-decoding baseline. It does not perform SFT or reinforcement learning yet.
+
+## Architecture
+
+At time step \(t\), the controller receives an explicit state:
+
+$$
+s_t = (q,\; \tilde q_t,\; D_t,\; h_t,\; b_t)
+$$
+
+where:
+
+- \(q\) is the original user question;
+- \(\tilde q_t\) is the current search query;
+- \(D_t\) is the current ranked evidence set and its scores;
+- \(h_t\) is the action and observation history;
+- \(b_t\) is the remaining step, latency, token, or monetary budget.
+
+The action space is deliberately small:
+
+$$
+\mathcal A = \{\text{VECTOR},\text{BM25},\text{HYBRID},\text{RERANK},
+\text{REWRITE},\text{ANSWER},\text{STOP}\}.
+$$
+
+The policy produces one categorical distribution over those valid actions:
+
+$$
+\pi_\theta(a_t\mid s_t)
+=
+\frac{\exp z_\theta(s_t,a_t)}
+{\sum_{a'\in\mathcal A}\exp z_\theta(s_t,a')}.
+$$
+
+Experiment 0 maps the actions to seven single-token codes and reads their logits after one model forward pass. Greedy selection uses
+
+$$
+a_t=\arg\max_{a\in\mathcal A}\pi_\theta(a\mid s_t),
+$$
+
+while exploratory execution can sample \(a_t\sim\pi_\theta(\cdot\mid s_t)\). Because the sampler only sees \(\mathcal A\), syntactically invalid tool names have zero probability.
+
+The environment executes the selected action and returns an observation:
+
+$$
+o_t = T_{a_t}(s_t),
+\qquad
+s_{t+1}=f(s_t,a_t,o_t).
+$$
+
+This continues until the policy selects `ANSWER`, selects `STOP`, or exhausts its budget.
+
+```mermaid
+flowchart LR
+    Q[User question] --> S[Explicit state s_t]
+    S --> P[Finite-action policy]
+    P --> A{Selected action}
+    A -->|BM25 / vector / hybrid| R[Retrieve]
+    A -->|Rerank| K[Rerank evidence]
+    A -->|Rewrite| W[Rewrite query]
+    R --> O[Observation o_t]
+    K --> O
+    W --> O
+    O --> U[State update]
+    U --> S
+    A -->|Answer / stop| X[Terminate]
+```
+
+The policy, action sampler, tools, state transition, and answer generation are separate components. A production system can replace the retrievers or the model without changing the transition contract.
+
+## Why this can speed up agentic search
+
+A ReAct controller normally generates a variable-length sequence of reasoning tokens before emitting a tool name. If it generates \(m_t\) tokens at step \(t\), its controller cost is approximately
+
+$$
+C_{\text{ReAct},t}
+\approx C_{\text{prefill}}(s_t)
++ \sum_{j=1}^{m_t} C_{\text{decode}}(s_t,y_{<j}).
+$$
+
+The finite controller performs the state prefill and reads a small set of action logits directly:
+
+$$
+C_{\text{finite},t}
+\approx C_{\text{prefill}}(s_t)+C_{\text{select}}(|\mathcal A|).
+$$
+
+For a small action set, \(C_{\text{select}}\) is negligible compared with autoregressive decoding. The architecture can also reduce total search cost by learning when another retrieval call is useful, which retriever fits the current evidence gap, and when the evidence is sufficient to answer.
+
+The speed gain is therefore composed of two effects:
+
+$$
+\text{total latency}
+=
+\sum_{t=0}^{T-1}
+(\text{policy latency}_t+\text{tool latency}_t),
+$$
+
+where finite decoding can reduce policy latency per step, and a trained policy can reduce the number of steps \(T\).
+
+## Initial speed result
+
+The included pilot compares the finite controller with a free-form ReAct controller using the same Qwen2.5-0.5B-Instruct model, retrieval tools, questions, top-k, and four-step budget on an Apple M1 GPU.
+
+| Metric | Finite policy | ReAct policy |
+|---|---:|---:|
+| Median end-to-end latency | 1.27 s | 2.21 s |
+| Mean model time | 1.27 s | 2.22 s |
+| Generated action/reasoning tokens per run | 4.0 | 26.7 |
+| Valid-action rate | 100% | 100% |
+| Retrieval success | 100% | 100% |
+| nDCG@3 | 1.0 | 1.0 |
+
+This is a **1.74× median speedup** in the small pilot. It is an architectural smoke test, not a general performance claim: the benchmark has three questions, both controllers used four steps on average, and the deterministic answer operation isolates controller and retrieval behavior. Larger corpora, more questions, stronger relevance labels, repeated hardware runs, and end-answer evaluation are needed for a serious comparison.
+
+## Learning the policy
+
+The interaction produces a trajectory
+
+$$
+\tau=(s_0,a_0,o_0,s_1,a_1,o_1,\ldots,s_T),
+$$
+
+which makes search a finite-horizon Markov decision process when the state contains all decision-relevant history. If the state hides relevant information, the same system is better viewed as a partially observable MDP with the serialized state acting as a belief summary.
+
+The training objective is expected discounted return:
+
+$$
+J(\theta)
+=
+\mathbb E_{\tau\sim\pi_\theta}
+\left[\sum_{t=0}^{T-1}\gamma^t r_t+r_T\right].
+$$
+
+### Reward design
+
+A cost-aware terminal reward can combine answer quality, evidence quality, and execution cost:
+
+$$
+r_T =
+w_A Q_{\text{answer}}
++w_R Q_{\text{retrieval}}
+-\lambda_c N_{\text{calls}}
+-\lambda_l L_{\text{ms}}
+-\lambda_k N_{\text{tokens}}
+-\lambda_i N_{\text{invalid}}
+-\lambda_d N_{\text{duplicate actions}}.
+$$
+
+Possible quality terms include exact match, F1, an LLM or human preference score, Recall@k, nDCG@k, and citation support. Costs should be normalized to comparable scales before choosing the weights. A policy should not receive answer-quality credit without evidence attribution, or it may learn to answer early from parametric memory.
+
+Dense progress rewards can shorten the credit-assignment path:
+
+$$
+r_t^{\text{progress}}
+=
+\eta\bigl(Q_{\text{evidence}}(s_{t+1})-Q_{\text{evidence}}(s_t)\bigr).
+$$
+
+This is potential-based shaping when written as
+
+$$
+F(s_t,s_{t+1})=\gamma\Phi(s_{t+1})-\Phi(s_t),
+$$
+
+which preserves the optimal policy under the standard assumptions while supplying a denser learning signal.
+
+### Stage 1: supervised policy learning
+
+Before RL, successful or expert-generated trajectories give state-action examples \((s_t,a_t^*)\). Supervised fine-tuning minimizes categorical cross-entropy:
+
+$$
+\mathcal L_{\text{SFT}}(\theta)
+=
+-\mathbb E_{(s,a^*)\sim\mathcal D}
+\left[\log\pi_\theta(a^*\mid s)\right].
+$$
+
+This teaches action semantics and prevents early RL runs from spending most of their budget on malformed or obviously poor trajectories. Because the action space is finite, we can also report action accuracy, negative log-likelihood, Brier score, expected calibration error, and per-action confusion matrices.
+
+### Stage 2: contextual-bandit optimization
+
+Some decisions can first be trained as contextual bandits. Given a fixed state and observed utility \(R(s,a)\), optimize
+
+$$
+J_{\text{bandit}}(\theta)
+=
+\mathbb E_{s\sim\mathcal D,\,a\sim\pi_\theta(\cdot\mid s)}[R(s,a)].
+$$
+
+This is useful for isolated choices such as selecting BM25 versus vector search from the initial query. It does not model how an early action changes later evidence, so full trajectories are required for rewrite, rerank, stopping, and budget-allocation behavior.
+
+### Stage 3: sequential actor-critic training
+
+For trajectory-level optimization, learn a value function \(V_\phi(s_t)\) and estimate temporal-difference residuals:
+
+$$
+\delta_t=r_t+\gamma V_\phi(s_{t+1})-V_\phi(s_t).
+$$
+
+Generalized advantage estimation gives
+
+$$
+\hat A_t
+=
+\sum_{l=0}^{T-t-1}(\gamma\lambda)^l\delta_{t+l}.
+$$
+
+A PPO-style update can then use the exact categorical action probabilities:
+
+$$
+\rho_t(\theta)
+=
+\frac{\pi_\theta(a_t\mid s_t)}
+{\pi_{\theta_{\text{old}}}(a_t\mid s_t)},
+$$
+
+$$
+\mathcal L_{\text{clip}}(\theta)
+=
+-\mathbb E_t\left[
+\min\left(
+\rho_t\hat A_t,
+\operatorname{clip}(\rho_t,1-\epsilon,1+\epsilon)\hat A_t
+\right)
+\right].
+$$
+
+The full loss may include value regression and entropy regularization:
+
+$$
+\mathcal L
+=
+\mathcal L_{\text{clip}}
++c_v\,\mathbb E_t[(V_\phi(s_t)-\hat G_t)^2]
+-c_H\,\mathbb E_t[H(\pi_\theta(\cdot\mid s_t))].
+$$
+
+The finite action space is helpful here: action probabilities, entropy, KL divergence, and importance ratios are available exactly rather than being approximated over unconstrained text completions.
+
+### Cost constraints instead of fixed reward weights
+
+For deployment, latency or spend may be a constraint rather than a soft preference:
+
+$$
+\max_\theta\;\mathbb E[Q_{\text{answer}}(\tau)]
+\quad\text{subject to}\quad
+\mathbb E[C(\tau)]\le B.
+$$
+
+The Lagrangian objective is
+
+$$
+\max_\theta\min_{\mu\ge0}
+\;\mathbb E[Q_{\text{answer}}(\tau)]
+-\mu\bigl(\mathbb E[C(\tau)]-B\bigr).
+$$
+
+Updating \(\mu\) from observed budget violations lets the same architecture target different latency or cost budgets without hiding the tradeoff inside one manually tuned reward.
+
+## Experimental roadmap
+
+1. **Experiment 0 — constrained baseline:** compare a heuristic policy, vanilla Qwen finite-action decoding, and free-form ReAct.
+2. **Experiment 1 — SFT:** train on expert, oracle, and successful-search state-action pairs.
+3. **Experiment 2 — offline evaluation:** measure action accuracy, calibration, retrieval quality, answer quality, calls, tokens, and latency on held-out trajectories.
+4. **Experiment 3 — online RL:** optimize the sequential cost-aware reward with PPO or another categorical actor-critic method.
+5. **Experiment 4 — constrained RL:** learn policies for explicit latency and monetary budgets.
+6. **Experiment 5 — generalization:** test new corpora, query types, retrievers, budgets, and action sets.
+
+Every experiment should compare answer quality at matched cost and cost at matched answer quality. A faster policy that terminates without sufficient evidence is not an improvement.
+
+The optimization path follows the ideas behind [policy-gradient methods](https://papers.nips.cc/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html), [generalized advantage estimation](https://arxiv.org/abs/1506.02438), [PPO](https://arxiv.org/abs/1707.06347), and [potential-based reward shaping](https://people.eecs.berkeley.edu/~pabbeel/cs287-fa09/readings/NgHaradaRussell-shaping-ICML1999.pdf). The free-form comparison is based on the reasoning-and-action pattern introduced by [ReAct](https://arxiv.org/abs/2210.03629).
+
+## Current implementation
+
+Experiment 0 includes:
+
+- an explicit serializable agent state;
+- a seven-action schema;
+- deterministic local BM25-like, hashing-vector, hybrid, reranking, and query-rewrite tools;
+- a reproducible heuristic policy;
+- a Qwen finite-action policy using one-token action codes;
+- a Qwen ReAct comparison policy;
+- trajectory logging with probabilities, observations, tokens, calls, and latency;
+- retrieval, policy, and efficiency metrics;
+- a small in-repository corpus and benchmark.
+
+The local retrieval implementations are test fixtures, not production search engines. Their interfaces are intended to be replaced by real BM25, embedding, hybrid-search, and reranking services.
+
+## Repository layout
+
+```text
+src/agentic_policy/
+  actions.py          finite action schema
+  state.py            state, decisions, and trajectory records
+  policy.py           heuristic, finite Qwen, and ReAct policies
+  loop.py             policy → action → observation transition loop
+  retrieval.py        local retrieval and reranking tools
+  model_adapters.py   shared causal-language-model runtime
+  evaluation.py       retrieval, policy, and efficiency metrics
+  experiments/        demo, benchmark, and speed-comparison commands
+data/
+  demo_corpus.jsonl
+  demo_benchmark.jsonl
+tests/
+```
 
 ## Quick start
+
+Python 3.10 or newer is required.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-agentic-policy-demo --policy heuristic --seed 7
-agentic-policy-benchmark --policy heuristic --output runs/benchmark.jsonl
 pytest
 ```
 
-The default heuristic policy makes the included demo fully reproducible and works without a downloaded model. To run the constrained Qwen policy (a GPU is strongly recommended):
+Run the dependency-free reproducible baseline:
+
+```bash
+agentic-policy-demo --policy heuristic --seed 7
+agentic-policy-benchmark \
+  --policy heuristic \
+  --output runs/benchmark.jsonl
+```
+
+Install the model dependencies and run constrained Qwen action selection:
 
 ```bash
 pip install -e '.[qwen]'
-agentic-policy-demo --policy qwen --model Qwen/Qwen2.5-1.5B-Instruct \
-  --device auto --sampling greedy
+agentic-policy-demo \
+  --policy qwen \
+  --model Qwen/Qwen2.5-1.5B-Instruct \
+  --device auto \
+  --sampling greedy
 ```
 
-`--sampling greedy` selects the highest-probability valid action; `--sampling categorical` samples from the same masked distribution. The Qwen policy applies a softmax across only the seven single-token action codes and then chooses. It is the Experiment 0 comparator for later SFT/RL policies.
-
-## Layout
-
-```text
-src/agentic_policy/
-  actions.py        finite action schema
-  state.py          serializable S_t and trajectories
-  policy.py         policy interface, heuristic, Qwen constrained adapter
-  loop.py           select → tool → observation loop
-  retrieval.py      deterministic local BM25-like, vector, hybrid, rerank tools
-  evaluation.py     retrieval/policy/efficiency metrics
-  experiments/      demo and benchmark entry points
-data/demo_corpus.jsonl
-tests/              loop and metric tests
-```
-
-## Outputs and metrics
-
-Each run emits a JSONL trajectory (one record per question). A step retains the full action probability distribution, selected action, observation summary, elapsed milliseconds, model token counts when available, and tool call count. The benchmark summarizes answer/retrieval success, Recall@k, nDCG@k, expected-action accuracy, mean tool calls, wall latency, and model-token totals.
-
-This project intentionally uses a tiny in-repo corpus so baseline changes remain reproducible. Replace `data/demo_corpus.jsonl` with your corpus or implement a production retriever behind `RetrievalTools`; the state and evaluation contract stays unchanged.
-
-## Finite-state vs ReAct speed benchmark
-
-The comparison uses one shared Qwen model and identical state, retrieval tools, questions, top-k, and step budget. The finite controller scores all action candidates in one batched forward pass. The ReAct controller freely generates a short reasoning trace ending in `Action: <ACTION>`. Warm-up runs are excluded, controller order alternates, and accelerator synchronization is included in timings.
+Compare finite-action selection with free-form ReAct using one shared model instance:
 
 ```bash
 agentic-policy-speed \
@@ -59,4 +359,4 @@ agentic-policy-speed \
   --output runs/speed_comparison.json
 ```
 
-The summary reports end-to-end mean/p50/p95 latency, model time, retrieval-tool time, steps, tokens, tool calls, valid-action rate, retrieval quality, and the p50 finite-state speedup. Per-run trajectories are retained in the output for auditing. This measures **controller inference overhead**, not answer-generation quality: both controllers use the same deterministic answer operation after selecting `ANSWER`.
+Each benchmark output retains the complete per-step trajectory so results can be audited rather than reduced to one aggregate number.
