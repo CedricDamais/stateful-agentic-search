@@ -1,0 +1,15 @@
+from enum import Enum
+
+
+class Action(str, Enum):
+    VECTOR_SEARCH = "VECTOR_SEARCH"
+    BM25_SEARCH = "BM25_SEARCH"
+    HYBRID_SEARCH = "HYBRID_SEARCH"
+    RERANK = "RERANK"
+    REWRITE_QUERY = "REWRITE_QUERY"
+    ANSWER = "ANSWER"
+    STOP = "STOP"
+
+
+RETRIEVAL_ACTIONS = {Action.VECTOR_SEARCH, Action.BM25_SEARCH, Action.HYBRID_SEARCH}
+ALL_ACTIONS = tuple(Action)

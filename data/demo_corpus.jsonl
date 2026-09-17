@@ -1,0 +1,5 @@
+{"id":"python-gil","title":"Python GIL","text":"The Global Interpreter Lock allows only one thread to execute Python bytecode at a time in CPython."}
+{"id":"qwen-policy","title":"Constrained action policies","text":"An action policy maps the current agent state to probabilities over a finite allowed action set."}
+{"id":"bm25","title":"BM25 retrieval","text":"BM25 is a lexical ranking function that rewards query term frequency while normalizing document length."}
+{"id":"vector-search","title":"Vector retrieval","text":"Vector search compares embedding representations and can retrieve semantically related wording."}
+{"id":"rl","title":"Reinforcement learning","text":"Reinforcement learning optimizes a policy from rewards collected across trajectories."}
