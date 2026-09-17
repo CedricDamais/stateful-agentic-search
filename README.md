@@ -1,5 +1,3 @@
-(eval):5: parse error near `end'
-(eval):5: parse error near `end'
 # Stateful Agentic Search
 
 Stateful Agentic Search is a research architecture for retrieval agents whose control decisions are explicit, finite, measurable, and trainable.
