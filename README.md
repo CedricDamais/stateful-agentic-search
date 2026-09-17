@@ -12,7 +12,7 @@ Experiment 0 implements the untrained constrained-decoding baseline. It does not
 
 ## Architecture
 
-At time step \(t\), the controller receives an explicit state:
+At time step $t$, the controller receives an explicit state:
 
 $$
 s_t = (q,\; \tilde q_t,\; D_t,\; h_t,\; b_t)
@@ -20,43 +20,58 @@ $$
 
 where:
 
-- \(q\) is the original user question;
-- \(\tilde q_t\) is the current search query;
-- \(D_t\) is the current ranked evidence set and its scores;
-- \(h_t\) is the action and observation history;
-- \(b_t\) is the remaining step, latency, token, or monetary budget.
+- $q$ is the original user question;
+- $\tilde q_t$ is the current search query;
+- $D_t$ is the current ranked evidence set and its scores;
+- $h_t$ is the action and observation history;
+- $b_t$ is the remaining step, latency, token, or monetary budget.
 
 The action space is deliberately small:
 
 $$
-\mathcal A = \{\text{VECTOR},\text{BM25},\text{HYBRID},\text{RERANK},
-\text{REWRITE},\text{ANSWER},\text{STOP}\}.
+\mathcal A =
+\{
+\text{VECTOR},
+\text{BM25},
+\text{HYBRID},
+\text{RERANK},
+\text{REWRITE},
+\text{ANSWER},
+\text{STOP}
+\}
 $$
 
 The policy produces one categorical distribution over those valid actions:
 
-$$
-\pi_\theta(a_t\mid s_t)
+```math
+\pi_\theta(a_t \mid s_t)
 =
-\frac{\exp z_\theta(s_t,a_t)}
-{\sum_{a'\in\mathcal A}\exp z_\theta(s_t,a')}.
-$$
+\frac{
+\exp z_\theta(s_t,a_t)
+}{
+\sum_{a' \in \mathcal A}
+\exp z_\theta(s_t,a')
+}
+```
+
 
 Experiment 0 maps the actions to seven single-token codes and reads their logits after one model forward pass. Greedy selection uses
 
-$$
-a_t=\arg\max_{a\in\mathcal A}\pi_\theta(a\mid s_t),
-$$
+```math
+a_t =
+\arg\max_{a \in \mathcal A}
+\pi_\theta(a \mid s_t)
+```
 
-while exploratory execution can sample \(a_t\sim\pi_\theta(\cdot\mid s_t)\). Because the sampler only sees \(\mathcal A\), syntactically invalid tool names have zero probability.
+while exploratory execution can sample $a_t \sim \pi_\theta(\cdot \mid s_t)$. Because the sampler only sees $\mathcal A$, syntactically invalid tool names have zero probability.
 
 The environment executes the selected action and returns an observation:
 
-$$
+```math
 o_t = T_{a_t}(s_t),
 \qquad
-s_{t+1}=f(s_t,a_t,o_t).
-$$
+s_{t+1} = f(s_t,a_t,o_t)
+```
 
 This continues until the policy selects `ANSWER`, selects `STOP`, or exhausts its budget.
 
@@ -77,25 +92,30 @@ flowchart LR
 ```
 
 The policy, action sampler, tools, state transition, and answer generation are separate components. A production system can replace the retrievers or the model without changing the transition contract.
-
 ## Why this can speed up agentic search
 
-A ReAct controller normally generates a variable-length sequence of reasoning tokens before emitting a tool name. If it generates \(m_t\) tokens at step \(t\), its controller cost is approximately
+A ReAct controller normally generates a variable-length sequence of reasoning tokens before emitting a tool name. If it generates $m_t$ tokens at step $t$, its controller cost is approximately:
 
-$$
-C_{\text{ReAct},t}
-\approx C_{\text{prefill}}(s_t)
-+ \sum_{j=1}^{m_t} C_{\text{decode}}(s_t,y_{<j}).
-$$
+```math
+C_{\mathrm{ReAct},t}
+\approx
+C_{\mathrm{prefill}}(s_t)
++
+\sum_{j=1}^{m_t}
+C_{\mathrm{decode}}(s_t, y_{1:j-1})
+```
 
 The finite controller performs the state prefill and reads a small set of action logits directly:
 
-$$
+```math
 C_{\text{finite},t}
-\approx C_{\text{prefill}}(s_t)+C_{\text{select}}(|\mathcal A|).
-$$
+\approx
+C_{\text{prefill}}(s_t)
++
+C_{\text{select}}(|\mathcal A|)
+```
 
-For a small action set, \(C_{\text{select}}\) is negligible compared with autoregressive decoding. The architecture can also reduce total search cost by learning when another retrieval call is useful, which retriever fits the current evidence gap, and when the evidence is sufficient to answer.
+For a small action set, C_{\text{select}} is negligible compared with autoregressive decoding. The architecture can also reduce total search cost by learning when another retrieval call is useful, which retriever fits the current evidence gap, and when the evidence is sufficient to answer.
 
 The speed gain is therefore composed of two effects:
 
@@ -103,10 +123,14 @@ $$
 \text{total latency}
 =
 \sum_{t=0}^{T-1}
-(\text{policy latency}_t+\text{tool latency}_t),
+\left(
+\text{policy latency}_t
++
+\text{tool latency}_t
+\right)
 $$
 
-where finite decoding can reduce policy latency per step, and a trained policy can reduce the number of steps \(T\).
+where finite decoding can reduce policy latency per step, and a trained policy can reduce the number of steps $T$.
 
 ## Initial speed result
 
@@ -128,7 +152,8 @@ This is a **1.74× median speedup** in the small pilot. It is an architectural s
 The interaction produces a trajectory
 
 $$
-\tau=(s_0,a_0,o_0,s_1,a_1,o_1,\ldots,s_T),
+\tau =
+(s_0,a_0,o_0,s_1,a_1,o_1,\ldots,s_T)
 $$
 
 which makes search a finite-horizon Markov decision process when the state contains all decision-relevant history. If the state hides relevant information, the same system is better viewed as a partially observable MDP with the serialized state acting as a belief summary.
@@ -138,8 +163,13 @@ The training objective is expected discounted return:
 $$
 J(\theta)
 =
-\mathbb E_{\tau\sim\pi_\theta}
-\left[\sum_{t=0}^{T-1}\gamma^t r_t+r_T\right].
+\mathbb E_{\tau \sim \pi_\theta}
+\left[
+\sum_{t=0}^{T-1}
+\gamma^t r_t
++
+r_T
+\right]
 $$
 
 ### Reward design
@@ -147,14 +177,21 @@ $$
 A cost-aware terminal reward can combine answer quality, evidence quality, and execution cost:
 
 $$
-r_T =
+r_T
+=
 w_A Q_{\text{answer}}
-+w_R Q_{\text{retrieval}}
--\lambda_c N_{\text{calls}}
--\lambda_l L_{\text{ms}}
--\lambda_k N_{\text{tokens}}
--\lambda_i N_{\text{invalid}}
--\lambda_d N_{\text{duplicate actions}}.
++
+w_R Q_{\text{retrieval}}
+-
+\lambda_c N_{\text{calls}}
+-
+\lambda_l L_{\text{ms}}
+-
+\lambda_k N_{\text{tokens}}
+-
+\lambda_i N_{\text{invalid}}
+-
+\lambda_d N_{\text{duplicate actions}}
 $$
 
 Possible quality terms include exact match, F1, an LLM or human preference score, Recall@k, nDCG@k, and citation support. Costs should be normalized to comparable scales before choosing the weights. A policy should not receive answer-quality credit without evidence attribution, or it may learn to answer early from parametric memory.
@@ -164,48 +201,72 @@ Dense progress rewards can shorten the credit-assignment path:
 $$
 r_t^{\text{progress}}
 =
-\eta\bigl(Q_{\text{evidence}}(s_{t+1})-Q_{\text{evidence}}(s_t)\bigr).
+\eta
+\left(
+Q_{\text{evidence}}(s_{t+1})
+-
+Q_{\text{evidence}}(s_t)
+\right)
 $$
 
 This is potential-based shaping when written as
 
 $$
-F(s_t,s_{t+1})=\gamma\Phi(s_{t+1})-\Phi(s_t),
+F(s_t,s_{t+1})
+=
+\gamma \Phi(s_{t+1})
+-
+\Phi(s_t)
 $$
 
 which preserves the optimal policy under the standard assumptions while supplying a denser learning signal.
 
 ### Stage 1: supervised policy learning
 
-Before RL, successful or expert-generated trajectories give state-action examples \((s_t,a_t^*)\). Supervised fine-tuning minimizes categorical cross-entropy:
+Before RL, successful or expert-generated trajectories give state-action examples $(s_t,a_t^*)$. Supervised fine-tuning minimizes categorical cross-entropy:
 
 $$
 \mathcal L_{\text{SFT}}(\theta)
 =
--\mathbb E_{(s,a^*)\sim\mathcal D}
-\left[\log\pi_\theta(a^*\mid s)\right].
+-
+\mathbb E_{(s,a^*) \sim \mathcal D}
+\left[
+\log \pi_\theta(a^* \mid s)
+\right]
 $$
 
 This teaches action semantics and prevents early RL runs from spending most of their budget on malformed or obviously poor trajectories. Because the action space is finite, we can also report action accuracy, negative log-likelihood, Brier score, expected calibration error, and per-action confusion matrices.
 
 ### Stage 2: contextual-bandit optimization
 
-Some decisions can first be trained as contextual bandits. Given a fixed state and observed utility \(R(s,a)\), optimize
+Some decisions can first be trained as contextual bandits. Given a fixed state and observed utility $R(s,a)$, optimize
 
 $$
 J_{\text{bandit}}(\theta)
 =
-\mathbb E_{s\sim\mathcal D,\,a\sim\pi_\theta(\cdot\mid s)}[R(s,a)].
+\mathbb E_{
+s \sim \mathcal D,\,
+a \sim \pi_\theta(\cdot \mid s)
+}
+\left[
+R(s,a)
+\right]
 $$
 
 This is useful for isolated choices such as selecting BM25 versus vector search from the initial query. It does not model how an early action changes later evidence, so full trajectories are required for rewrite, rerank, stopping, and budget-allocation behavior.
 
 ### Stage 3: sequential actor-critic training
 
-For trajectory-level optimization, learn a value function \(V_\phi(s_t)\) and estimate temporal-difference residuals:
+For trajectory-level optimization, learn a value function $V_\phi(s_t)$ and estimate temporal-difference residuals:
 
 $$
-\delta_t=r_t+\gamma V_\phi(s_{t+1})-V_\phi(s_t).
+\delta_t
+=
+r_t
++
+\gamma V_\phi(s_{t+1})
+-
+V_\phi(s_t)
 $$
 
 Generalized advantage estimation gives
@@ -213,7 +274,9 @@ Generalized advantage estimation gives
 $$
 \hat A_t
 =
-\sum_{l=0}^{T-t-1}(\gamma\lambda)^l\delta_{t+l}.
+\sum_{l=0}^{T-t-1}
+(\gamma \lambda)^l
+\delta_{t+l}
 $$
 
 A PPO-style update can then use the exact categorical action probabilities:
@@ -221,19 +284,33 @@ A PPO-style update can then use the exact categorical action probabilities:
 $$
 \rho_t(\theta)
 =
-\frac{\pi_\theta(a_t\mid s_t)}
-{\pi_{\theta_{\text{old}}}(a_t\mid s_t)},
+\frac{
+\pi_\theta(a_t \mid s_t)
+}{
+\pi_{\theta_{\text{old}}}(a_t \mid s_t)
+}
 $$
+
+and the clipped policy objective
 
 $$
 \mathcal L_{\text{clip}}(\theta)
 =
--\mathbb E_t\left[
-\min\left(
-\rho_t\hat A_t,
-\operatorname{clip}(\rho_t,1-\epsilon,1+\epsilon)\hat A_t
+-
+\mathbb E_t
+\left[
+\min
+\left(
+\rho_t \hat A_t,\,
+\operatorname{clip}
+\left(
+\rho_t,
+1-\epsilon,
+1+\epsilon
 \right)
-\right].
+\hat A_t
+\right)
+\right]
 $$
 
 The full loss may include value regression and entropy regularization:
@@ -242,8 +319,22 @@ $$
 \mathcal L
 =
 \mathcal L_{\text{clip}}
-+c_v\,\mathbb E_t[(V_\phi(s_t)-\hat G_t)^2]
--c_H\,\mathbb E_t[H(\pi_\theta(\cdot\mid s_t))].
++
+c_v
+\mathbb E_t
+\left[
+\left(
+V_\phi(s_t)-\hat G_t
+\right)^2
+\right]
+-
+c_H
+\mathbb E_t
+\left[
+H\left(
+\pi_\theta(\cdot \mid s_t)
+\right)
+\right]
 $$
 
 The finite action space is helpful here: action probabilities, entropy, KL divergence, and importance ratios are available exactly rather than being approximated over unconstrained text completions.
@@ -253,20 +344,37 @@ The finite action space is helpful here: action probabilities, entropy, KL diver
 For deployment, latency or spend may be a constraint rather than a soft preference:
 
 $$
-\max_\theta\;\mathbb E[Q_{\text{answer}}(\tau)]
-\quad\text{subject to}\quad
-\mathbb E[C(\tau)]\le B.
+\max_\theta
+\;
+\mathbb E
+\left[
+Q_{\text{answer}}(\tau)
+\right]
+\qquad
+\text{subject to}
+\qquad
+\mathbb E[C(\tau)] \le B
 $$
 
 The Lagrangian objective is
 
 $$
-\max_\theta\min_{\mu\ge0}
-\;\mathbb E[Q_{\text{answer}}(\tau)]
--\mu\bigl(\mathbb E[C(\tau)]-B\bigr).
+\max_\theta
+\min_{\mu \ge 0}
+\left\{
+\mathbb E
+\left[
+Q_{\text{answer}}(\tau)
+\right]
+-
+\mu
+\left(
+\mathbb E[C(\tau)]-B
+\right)
+\right\}
 $$
 
-Updating \(\mu\) from observed budget violations lets the same architecture target different latency or cost budgets without hiding the tradeoff inside one manually tuned reward.
+Updating $\mu$ from observed budget violations lets the same architecture target different latency or cost budgets without hiding the tradeoff inside one manually tuned reward.
 
 ## Experimental roadmap
 
