@@ -474,6 +474,18 @@ agentic-policy-demo \
   --sampling greedy
 ```
 
+To have one initial SLM call extract typed task context (goal, query, scope, and constraints), then build tool arguments from that context:
+
+```bash
+agentic-policy-demo \
+  --policy qwen \
+  --state-interpreter qwen \
+  --model Qwen/Qwen2.5-1.5B-Instruct \
+  --device auto
+```
+
+The interpreter shares the model runtime with the action policy. Its latency and token counts are logged in each run's `state_interpretation` object.
+
 Compare finite-action selection with free-form ReAct using one shared model instance:
 
 ```bash
@@ -484,5 +496,7 @@ agentic-policy-speed \
   --repetitions 5 \
   --output runs/speed_comparison.json
 ```
+
+To include typed task-context extraction in that benchmark, add `--state-interpreter qwen`. Both controllers then receive the same interpreted context, and its model time and tokens are included in the totals.
 
 Each benchmark output retains the complete per-step trajectory so results can be audited rather than reduced to one aggregate number.
