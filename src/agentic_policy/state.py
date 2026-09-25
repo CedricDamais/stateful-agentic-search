@@ -30,6 +30,29 @@ class AgentState:
     def __post_init__(self) -> None:
         self.query = self.query or self.question
 
+    @property
+    def available_actions(self) -> tuple[Action, ...]:
+        """Actions that are meaningful in this state."""
+        actions = [
+            Action.VECTOR_SEARCH,
+            Action.BM25_SEARCH,
+            Action.HYBRID_SEARCH,
+            Action.REWRITE_QUERY,
+        ]
+        if self.documents:
+            actions.extend((Action.RERANK, Action.ANSWER))
+        searched = any(
+            item.get("action") in {
+                Action.VECTOR_SEARCH.value,
+                Action.BM25_SEARCH.value,
+                Action.HYBRID_SEARCH.value,
+            }
+            for item in self.history
+        )
+        if searched and not self.documents and self.max_steps - self.step <= 1:
+            actions.append(Action.STOP)
+        return tuple(actions)
+
     def policy_view(self) -> dict[str, Any]:
         """Bounded, JSON-serializable state representation given to a policy."""
         return {
@@ -37,6 +60,7 @@ class AgentState:
             "query": self.query,
             "step": self.step,
             "remaining_steps": self.max_steps - self.step,
+            "available_actions": [action.value for action in self.available_actions],
             "previous_actions": [item["action"] for item in self.history],
             "documents": [document.compact() for document in self.documents[:5]],
         }
@@ -45,7 +69,7 @@ class AgentState:
 @dataclass
 class ActionDecision:
     probabilities: dict[Action, float]
-    selected: Action
+    selected: Action | None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     model_latency_ms: float = 0.0
