@@ -34,7 +34,7 @@ def summarize(controller: str, runs: list[tuple]) -> dict[str, float | int | str
         "model_time_mean_ms": round(statistics.mean(model_times), 3),
         "tool_time_mean_ms": round(statistics.mean(tool_times), 3),
         "steps_mean": round(statistics.mean(len(result.trajectory) for result, _ in runs), 3),
-        "prompt_tokens_mean": metrics.get("prompt_tokens", 0.0),
+        "prompt_tokens_mean": round(metrics.get("prompt_tokens", 0.0) + statistics.mean((result.state_interpretation or {}).get("prompt_tokens", 0) for result, _ in runs), 3),
         "completion_tokens_mean": round(metrics.get("completion_tokens", 0.0) + statistics.mean((result.state_interpretation or {}).get("completion_tokens", 0) for result, _ in runs), 3),
         "state_interpreter_latency_mean_ms": round(statistics.mean((result.state_interpretation or {}).get("latency_ms", 0.0) for result, _ in runs), 3),
         "state_interpreter_prompt_tokens_mean": round(statistics.mean((result.state_interpretation or {}).get("prompt_tokens", 0) for result, _ in runs), 3),
