@@ -389,6 +389,23 @@ Every experiment should compare answer quality at matched cost and cost at match
 
 The optimization path follows the ideas behind [policy-gradient methods](https://papers.nips.cc/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html), [generalized advantage estimation](https://arxiv.org/abs/1506.02438), [PPO](https://arxiv.org/abs/1707.06347), and [potential-based reward shaping](https://people.eecs.berkeley.edu/~pabbeel/cs287-fa09/readings/NgHaradaRussell-shaping-ICML1999.pdf). The free-form comparison is based on the reasoning-and-action pattern introduced by [ReAct](https://arxiv.org/abs/2210.03629).
 
+## Building tool arguments from state
+
+Choosing a tool and calling it are separate decisions. The finite policy answers “which operation next?”; it does not have to generate free-form parameters. A typed task interpreter can make one initial SLM call to turn the user's request into a validated context:
+
+```text
+TaskContext
+  goal: what must be found
+  query: initial retrieval query
+  scope: searchable source
+  include_globs / exclude_globs: file or source filters
+  constraints: explicit restrictions
+```
+
+At each later step, `build_tool_call(state, action)` creates arguments from that context and the live state, then validates them against that action's Pydantic schema. For example, BM25 gets the current query and configured top-k; reranking gets the query plus IDs of retrieved documents; answering gets the goal plus evidence IDs; query rewriting gets the goal and current query. The serialized trajectory records both the validated arguments and where each value came from.
+
+This keeps the fast finite policy focused on action selection while giving tools the inputs they actually need. The initial `--state-interpreter qwen` mode is intentionally a separate, measurable call—not hidden inside the policy. Its output must satisfy the TaskContext schema or the run fails visibly. The default `passthrough` interpreter makes no model call and preserves the user's question as both goal and query. A future harness can replace either component independently, and SFT/RL can train the finite policy on explicit states without changing tool argument contracts.
+
 ## Current implementation
 
 Experiment 0 includes:
@@ -411,6 +428,9 @@ The local retrieval implementations are test fixtures, not production search eng
 src/agentic_policy/
   actions.py          finite action schema
   state.py            state, decisions, and trajectory records
+  schemas.py          validated task context and per-action tool arguments
+  arguments.py        state-to-tool-argument construction
+  state_interpreter.py passthrough and Qwen task-context interpreters
   policy.py           heuristic, finite Qwen, and ReAct policies
   loop.py             policy → action → observation transition loop
   retrieval.py        local retrieval and reranking tools
