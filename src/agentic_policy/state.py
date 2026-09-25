@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .actions import Action
+from .schemas import TaskContext
 
 
 @dataclass
@@ -26,9 +27,12 @@ class AgentState:
     step: int = 0
     max_steps: int = 5
     answer: str | None = None
+    task_context: TaskContext | None = None
 
     def __post_init__(self) -> None:
-        self.query = self.query or self.question
+        self.query = self.query or (self.task_context.query if self.task_context else self.question)
+        if self.task_context is None:
+            self.task_context = TaskContext(goal=self.question, query=self.query)
 
     @property
     def available_actions(self) -> tuple[Action, ...]:
@@ -58,6 +62,7 @@ class AgentState:
         return {
             "question": self.question,
             "query": self.query,
+            "task_context": self.task_context.model_dump(mode="json"),
             "step": self.step,
             "remaining_steps": self.max_steps - self.step,
             "available_actions": [action.value for action in self.available_actions],
@@ -90,6 +95,7 @@ class TrajectoryStep:
     tool_calls: int
     policy_output: str | None = None
     policy_valid: bool = True
+    tool_call: dict[str, Any] | None = None
 
 
 @dataclass
@@ -100,6 +106,7 @@ class AgentResult:
     trajectory: list[TrajectoryStep]
     terminated_by: str
     total_latency_ms: float
+    state_interpretation: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
