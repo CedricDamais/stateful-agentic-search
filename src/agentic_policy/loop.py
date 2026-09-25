@@ -20,7 +20,10 @@ class AgentLoop:
             action_started = time.perf_counter()
             decision = self.policy.decide(state)
             action, tool_calls = decision.selected, 0
-            if action is Action.BM25_SEARCH:
+            if action is None:
+                action_name = "INVALID_OUTPUT"
+                observation = {"error": "Policy output did not contain an allowed action; see policy_output."}
+            elif action is Action.BM25_SEARCH:
                 state.documents, tool_calls = self.tools.bm25(state.query, self.top_k), 1
                 observation = {"result_ids": [d.id for d in state.documents], "query": state.query}
             elif action is Action.VECTOR_SEARCH:
@@ -40,8 +43,10 @@ class AgentLoop:
                 observation, terminated_by = {"answer": state.answer}, action.value
             else:
                 observation, terminated_by = {"reason": "policy stopped"}, action.value
+            if action is not None:
+                action_name = action.value
             step = TrajectoryStep(
-                step=index, action=action.value,
+                step=index, action=action_name,
                 probabilities={a.value: round(p, 8) for a, p in decision.probabilities.items()},
                 observation=observation, latency_ms=(time.perf_counter() - action_started) * 1000,
                 model_latency_ms=decision.model_latency_ms, prompt_tokens=decision.prompt_tokens,
@@ -50,7 +55,9 @@ class AgentLoop:
                 policy_valid=decision.valid,
             )
             steps.append(step)
-            state.history.append({"action": action.value, "observation": observation})
+            state.history.append({"action": action_name, "observation": observation})
             if action in {Action.ANSWER, Action.STOP}:
                 break
+            if action is None and index == max_steps - 1:
+                terminated_by = "INVALID_POLICY_OUTPUT"
         return AgentResult(question, state.answer, state.documents, steps, terminated_by, (time.perf_counter() - started) * 1000)
