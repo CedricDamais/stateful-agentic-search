@@ -71,7 +71,7 @@ class QwenConstrainedPolicy(ActionPolicy):
         allowed = state.available_actions
         mapping = ", ".join(f"{codes[action]}={action.value}" for action in allowed)
         messages = [{"role": "system", "content": "Select the best next action code from the allowed actions. Output one letter only."},
-                    {"role": "user", "content": f"State: {state_json}\\nAllowed action codes: {mapping}\\nCode:"}]
+                    {"role": "user", "content": f"State: {state_json}\nAllowed action codes: {mapping}\nCode:"}]
         return self.runtime.chat_prompt(messages)
 
     def decide(self, state: AgentState) -> ActionDecision:
@@ -110,7 +110,7 @@ class QwenReActPolicy(ActionPolicy):
             Action.STOP: "stop when no useful action remains",
         }
         allowed = state.available_actions
-        tools = "\\n".join(f"{action.value}: {descriptions[action]}" for action in allowed)
+        tools = "\n".join(f"{action.value}: {descriptions[action]}" for action in allowed)
         messages = [
             {"role": "system", "content": (
                 "You control a retrieval agent. Think briefly, then choose exactly one allowed tool name:\n"
@@ -127,7 +127,7 @@ class QwenReActPolicy(ActionPolicy):
         generation = self.runtime.generate(self._prompt(state), self.max_new_tokens)
         allowed = state.available_actions
         action_pattern = "|".join(re.escape(action.value) for action in allowed)
-        matches = re.findall(r"Action\\s*:\\s*(" + action_pattern + r")\\b", generation.text, re.I)
+        matches = re.findall(r"Action\s*:\s*(" + action_pattern + r")\b", generation.text, re.I)
         valid = bool(matches)
         selected = Action(matches[-1].upper()) if valid else None
         probabilities = {action: float(action is selected) for action in ALL_ACTIONS}
