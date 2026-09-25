@@ -55,7 +55,7 @@ The policy produces one categorical distribution over those valid actions:
 ```
 
 
-Experiment 0 maps the actions to seven single-token codes and reads their logits after one model forward pass. Greedy selection uses
+Experiment 0 maps the actions to seven single-token codes and reads their logits after one model forward pass. At each state, actions that cannot be executed meaningfully are masked before normalization: answering and reranking require retrieved documents, and stopping is only offered after a search has been attempted, no results were found, and the final step is reached. The ReAct controller receives the same allowed-action list. If its output cannot be parsed as an allowed action, the run records an invalid policy output instead of silently treating it as STOP. Greedy selection uses
 
 ```math
 a_t =
