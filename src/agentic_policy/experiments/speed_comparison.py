@@ -10,6 +10,7 @@ from agentic_policy.loop import AgentLoop
 from agentic_policy.model_adapters import TransformersCausalLM
 from agentic_policy.policy import QwenConstrainedPolicy, QwenReActPolicy
 from agentic_policy.retrieval import RetrievalTools
+from agentic_policy.state_interpreter import QwenTaskStateInterpreter
 from .common import ROOT
 
 
@@ -21,7 +22,7 @@ def percentile(values: list[float], fraction: float) -> float:
 
 def summarize(controller: str, runs: list[tuple]) -> dict[str, float | int | str]:
     totals = [result.total_latency_ms for result, _ in runs]
-    model_times = [sum(step.model_latency_ms for step in result.trajectory) for result, _ in runs]
+    model_times = [sum(step.model_latency_ms for step in result.trajectory) + (result.state_interpretation or {}).get("latency_ms", 0.0) for result, _ in runs]
     tool_times = [sum(max(0.0, step.latency_ms - step.model_latency_ms) for step in result.trajectory) for result, _ in runs]
     metrics = evaluate(runs)
     return {
@@ -34,7 +35,10 @@ def summarize(controller: str, runs: list[tuple]) -> dict[str, float | int | str
         "tool_time_mean_ms": round(statistics.mean(tool_times), 3),
         "steps_mean": round(statistics.mean(len(result.trajectory) for result, _ in runs), 3),
         "prompt_tokens_mean": metrics.get("prompt_tokens", 0.0),
-        "completion_tokens_mean": metrics.get("completion_tokens", 0.0),
+        "completion_tokens_mean": round(metrics.get("completion_tokens", 0.0) + statistics.mean((result.state_interpretation or {}).get("completion_tokens", 0) for result, _ in runs), 3),
+        "state_interpreter_latency_mean_ms": round(statistics.mean((result.state_interpretation or {}).get("latency_ms", 0.0) for result, _ in runs), 3),
+        "state_interpreter_prompt_tokens_mean": round(statistics.mean((result.state_interpretation or {}).get("prompt_tokens", 0) for result, _ in runs), 3),
+        "state_interpreter_completion_tokens_mean": round(statistics.mean((result.state_interpretation or {}).get("completion_tokens", 0) for result, _ in runs), 3),
         "tool_calls_mean": metrics.get("tool_calls", 0.0),
         "retrieval_success": metrics.get("retrieval_success", 0.0),
         "ndcg_at_3": metrics.get("ndcg_at_3", 0.0),
@@ -48,6 +52,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compare finite-state action scoring with free-form ReAct generation.")
     parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--state-interpreter", choices=["passthrough", "qwen"], default="passthrough",
+                        help="Build typed task context once before either controller starts.")
     parser.add_argument("--corpus", type=Path, default=ROOT / "data" / "demo_corpus.jsonl")
     parser.add_argument("--benchmark", type=Path, default=ROOT / "data" / "demo_benchmark.jsonl")
     parser.add_argument("--repetitions", type=int, default=3)
@@ -62,9 +68,10 @@ def main() -> None:
     items = [json.loads(line) for line in args.benchmark.read_text().splitlines() if line.strip()]
     runtime = TransformersCausalLM(args.model, args.device)
     tools = RetrievalTools.from_jsonl(args.corpus)
+    interpreter = QwenTaskStateInterpreter(runtime) if args.state_interpreter == "qwen" else None
     loops = {
-        "finite_state": AgentLoop(QwenConstrainedPolicy(runtime=runtime), tools),
-        "react": AgentLoop(QwenReActPolicy(runtime=runtime, max_new_tokens=args.react_max_new_tokens), tools),
+        "finite_state": AgentLoop(QwenConstrainedPolicy(runtime=runtime), tools, state_interpreter=interpreter),
+        "react": AgentLoop(QwenReActPolicy(runtime=runtime, max_new_tokens=args.react_max_new_tokens), tools, state_interpreter=interpreter),
     }
 
     for _ in range(args.warmups):
@@ -89,6 +96,7 @@ def main() -> None:
     comparison = {
         "model": args.model,
         "device": str(runtime.device),
+        "state_interpreter": args.state_interpreter,
         "repetitions": args.repetitions,
         "warmups": args.warmups,
         "finite_state": summaries["finite_state"],
